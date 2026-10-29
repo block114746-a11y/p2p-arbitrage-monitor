@@ -67,7 +67,6 @@ def fetch_binance_ads(method, side):
             adv = item["adv"]
             p = float(adv["price"])
             if _fits(adv.get("minSingleTransAmount"), adv.get("maxSingleTransAmount"), p):
-                # মার্চেন্টের নাম বের করার সঠিক নিয়ম (এখানেই ভুল ছিল)
                 advertiser = item.get("advertiser", {})
                 merchant_name = advertiser.get("nickName", "Unknown")
                 remarks = adv.get("remarks", "") or ""
@@ -90,8 +89,8 @@ def collect_market_data():
         sell_ads = fetch_binance_ads(m, "sell")
         if buy_ads or sell_ads:
             market_data[m] = {
-                "buy": sorted(buy_ads, key=lambda x: x["price"])[:3], 
-                "sell": sorted(sell_ads, key=lambda x: x["price"], reverse=True)[:3] 
+                "buy": sorted(buy_ads, key=lambda x: x["price"])[:2], 
+                "sell": sorted(sell_ads, key=lambda x: x["price"], reverse=True)[:2] 
             }
         time.sleep(0.5)
     return market_data
@@ -134,49 +133,51 @@ def format_full_analysis(market_data, best):
     msg += f"🕒 <i>{now}</i>\n"
     msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
     
-    # ১. লাইভ মার্কেট (টপ ২টি অ্যাড দেখাচ্ছি যাতে মেসেজ ছোট থাকে)
+    # ১. লাইভ মার্কেট আপডেট
     for method, data in market_data.items():
         msg += f"💳 <b>{method}</b>\n"
         if data.get("buy"):
-            msg += "   🟢 Buy:\n"
-            for ad in data["buy"][:2]:
-                msg += f"      • {ad['price']:.2f} BDT | {ad['fee_status']} | {ad['merchant']}\n"
+            msg += "   🟢 Buy Ads:\n"
+            for ad in data["buy"]:
+                msg += f"      • <b>{ad['price']:.2f} BDT</b> | {ad['fee_status']} | {ad['merchant']}\n"
         if data.get("sell"):
-            msg += "   🔴 Sell:\n"
-            for ad in data["sell"][:2]:
-                msg += f"      • {ad['price']:.2f} BDT | {ad['fee_status']} | {ad['merchant']}\n"
+            msg += "   🔴 Sell Ads:\n"
+            for ad in data["sell"]:
+                msg += f"      • <b>{ad['price']:.2f} BDT</b> | {ad['fee_status']} | {ad['merchant']}\n"
         msg += "\n"
 
     msg += "━━━━━━━━━━━━━━━━━━━━\n"
     
-    # ২. সেরা লাভের সুযোগ (BEST ACTION PLAN)
+    # ২. বিস্তারিত অ্যাকশন প্ল্যান (যা আপনি চেয়েছিলেন)
     if best and best["net_pct"] > 0:
         b = best["buy_data"]
         s = best["sell_data"]
         msg += "🎯 <b>BEST ACTION PLAN</b> 🎯\n\n"
         
-        msg += f"🛒 <b>1. BUY from {best['buy_method']}</b>\n"
-        msg += f"   Rate: <b>{b['price']:.2f} BDT</b>\n"
-        msg += f"   Merchant: {b['merchant']}\n"
-        msg += f"   Fee: {b['fee_status']}\n\n"
+        msg += f"🛒 <b>কোথা থেকে কিনবেন:</b>\n"
+        msg += f"   <b>Binance</b> থেকে <b>{best['buy_method']}</b> দিয়ে\n"
+        msg += f"   রেট: <b>{b['price']:.2f} BDT</b>\n"
+        msg += f"   মার্চেন্ট: {b['merchant']}\n"
+        msg += f"   চার্জ: {b['fee_status']}\n\n"
         
-        msg += f"💰 <b>2. SELL to {best['sell_method']}</b>\n"
-        msg += f"   Rate: <b>{s['price']:.2f} BDT</b>\n"
-        msg += f"   Merchant: {s['merchant']}\n"
-        msg += f"   Fee: {s['fee_status']}\n\n"
+        msg += f"💰 <b>কোথায় বিক্রি করবেন:</b>\n"
+        msg += f"   <b>Binance</b>-এ <b>{best['sell_method']}</b> দিয়ে\n"
+        msg += f"   রেট: <b>{s['price']:.2f} BDT</b>\n"
+        msg += f"   মার্চেন্ট: {s['merchant']}\n"
+        msg += f"   চার্জ: {s['fee_status']}\n\n"
 
-        msg += f"📈 <b>Net Profit:</b> <u>{best['net_pct']:.2f}%</u>\n"
-        msg += f"💵 <b>Est. Profit:</b> ~{best['profit_bdt']:.0f} BDT <i>(on {TRADE_SIZE_USDT:.0f} USDT)</i>\n\n"
+        msg += f"📈 <b>মোট লাভ:</b> <u>{best['net_pct']:.2f}%</u>\n"
+        msg += f"💵 <b>টাকায় লাভ:</b> ~{best['profit_bdt']:.0f} BDT <i>(প্রতি {TRADE_SIZE_USDT:.0f} USDT-তে)</i>\n\n"
         
         if best["net_pct"] >= ALERT_THRESHOLD_PCT:
-            msg += "🔥 <b>HIGH PROFIT ALERT! EXECUTE NOW!</b> 🔥\n"
+            msg += "🔥 <b>HIGH PROFIT ALERT! এখনই ট্রেড করুন!</b> 🔥\n"
         else:
-            msg += "⚠️ <i>Below 1.5% target. Wait for better spread.</i>\n"
+            msg += "⚠️ <i>লাভ ১.৫% এর নিচে। ভালো স্প্রেডের জন্য অপেক্ষা করুন।</i>\n"
     else:
-        msg += "❌ <i>No profitable opportunities found right now.</i>\n"
+        msg += "❌ <i>এই মুহূর্তে লাভজনক কোনো সুযোগ পাওয়া যায়নি।</i>\n"
         
     msg += "━━━━━━━━━━━━━━━━━━━━\n"
-    msg += "💡 <b>Rules:</b> Use 'Send Money' only. Cancel if extra charges are requested."
+    msg += "💡 <b>নিয়ম:</b> সবসময় 'Send Money' করবেন। কেউ এক্সট্রা চার্জ চাইলে অর্ডার ক্যানসেল করে দিন।"
     
     return msg
 
