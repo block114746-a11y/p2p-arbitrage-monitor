@@ -24,15 +24,26 @@ HEADERS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("p2p")
 
-# ========================== FEE DETECTOR ==========================
-FEE_KEYWORDS = ["charge", "fee", "extra", "20tk", "20 taka", "15tk", "15 taka", "cash out", "cashout"]
+# ========================== SMART FEE DETECTOR ==========================
+# চার্জ ডিটেক্ট করার শব্দ (যেমন: charge, fee, 20 taka)
+FEE_KEYWORDS = ["charge", "fee", "extra", "20tk", "20 taka", "15tk", "15 taka", "cash out", "cashout", "20৳", "15৳", "kata"]
+# চার্জ না নেওয়ার শব্দ
+NO_FEE_KEYWORDS = ["send money", "no fee", "no charge", "free", "0 fee", "without charge", "sendmoney", "send money only"]
 
-def check_remarks(remarks):
-    if not remarks: return "✅ No Fee Mentioned"
+def analyze_fee_status(remarks):
+    if not remarks: 
+        return "✅ No Fee Mentioned"
+    
     remarks_lower = remarks.lower()
-    if any(keyword in remarks_lower for keyword in FEE_KEYWORDS):
-        return "🚨 Fee May Apply"
-    return "✅ No Fee Mentioned"
+    has_fee = any(keyword in remarks_lower for keyword in FEE_KEYWORDS)
+    has_no_fee = any(keyword in remarks_lower for keyword in NO_FEE_KEYWORDS)
+    
+    if has_no_fee and not has_fee:
+        return "✅ No Fee (Send Money)"
+    elif has_fee:
+        return "🚨 Hidden Charge!"
+    else:
+        return "✅ No Fee Mentioned"
 
 # ========================== FETCHERS ==========================
 def _fits(min_bdt, max_bdt, price):
@@ -42,7 +53,7 @@ def _fits(min_bdt, max_bdt, price):
     except (TypeError, ValueError):
         return True
 
-def fetch_binance(method, side):
+def fetch_binance_ads(method, side):
     url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
     body = {
         "fiat": "BDT", "asset": "USDT", "page": 1, "rows": ROWS,
@@ -59,15 +70,15 @@ def fetch_binance(method, side):
             adv = item["adv"]
             p = float(adv["price"])
             if _fits(adv.get("minSingleTransAmount"), adv.get("maxSingleTransAmount"), p):
-                # মার্চেন্টের আসল নাম বের করার সঠিক নিয়ম
                 advertiser = adv.get("advertiser", {})
-                merchant_name = advertiser.get("nickName", "Unknown")
+                # মার্চেন্টের নাম বের করার আপডেটেড নিয়ম
+                merchant_name = advertiser.get("nickName") or advertiser.get("userNickName") or "Unknown"
                 remarks = adv.get("remarks", "") or ""
                 
                 ads.append({
                     "price": p,
                     "merchant": merchant_name,
-                    "fee_status": check_remarks(remarks)
+                    "fee_status": analyze_fee_status(remarks)
                 })
         return ads
     except Exception as e:
@@ -75,17 +86,30 @@ def fetch_binance(method, side):
         return []
 
 # ============================ CORE LOGIC ============================
-def find_best_opportunity():
-    best = None
-    for buy_method in METHODS:
-        buy_ads = fetch_binance(buy_method, "buy")
-        if not buy_ads: continue
-        best_buy = min(buy_ads, key=lambda x: x["price"])
+def collect_market_data():
+    market_data = {}
+    for m in METHODS:
+        buy_ads = fetch_binance_ads(m, "buy")
+        sell_ads = fetch_binance_ads(m, "sell")
         
-        for sell_method in METHODS:
-            sell_ads = fetch_binance(sell_method, "sell")
-            if not sell_ads: continue
-            best_sell = max(sell_ads, key=lambda x: x["price"])
+        if buy_ads or sell_ads:
+            market_data[m] = {
+                "buy": sorted(buy_ads, key=lambda x: x["price"])[:3], 
+                "sell": sorted(sell_ads, key=lambda x: x["price"], reverse=True)[:3] 
+            }
+        time.sleep(0.5)
+    return market_data
+
+def find_best_opportunity(market_data):
+    best = None
+    for buy_method, data in market_data.items():
+        if not data.get("buy"): continue
+        
+        for sell_method, sell_data in market_data.items():
+            if not sell_data.get("sell"): continue
+            
+            best_buy = data["buy"][0]
+            best_sell = sell_data["sell"][0]
             
             if best_sell["price"] <= best_buy["price"]: continue
             
@@ -98,7 +122,6 @@ def find_best_opportunity():
                     "net_pct": net_pct, 
                     "profit_bdt": (best_sell["price"] - best_buy["price"]) * TRADE_SIZE_USDT
                 }
-        time.sleep(0.5)
     return best
 
 def send_telegram(text):
@@ -109,42 +132,56 @@ def send_telegram(text):
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
 
-def format_message(best):
-    now = datetime.now().strftime("%I:%M %p")
-    msg = f"📊 <b>P2P Arbitrage ({now})</b>\n\n"
+def format_full_analysis(market_data, best):
+    now = datetime.now().strftime("%I:%M %p, %d %b %Y")
     
+    msg = "📊 <b>P2P ARBITRAGE MONITOR</b>\n"
+    msg += f"🕒 <i>{now}</i>\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # ১. সেরা সুযোগ
     if best and best["net_pct"] > 0:
         b = best["buy_data"]
         s = best["sell_data"]
-        
-        msg += f"🟢 <b>BUY</b> from <b>{best['buy_method']}</b>\n"
-        msg += f"   Rate: <b>{b['price']:.2f} BDT</b>\n"
-        msg += f"   Merchant: {b['merchant']}\n"
-        msg += f"   Fee: {b['fee_status']}\n\n"
-            
-        msg += f"🔴 <b>SELL</b> to <b>{best['sell_method']}</b>\n"
-        msg += f"   Rate: <b>{s['price']:.2f} BDT</b>\n"
-        msg += f"   Merchant: {s['merchant']}\n"
-        msg += f"   Fee: {s['fee_status']}\n\n"
-
-        msg += f"📈 <b>Net Profit:</b> <u>{best['net_pct']:.2f}%</u>\n"
-        msg += f"💵 <b>Est. Profit:</b> ~{best['profit_bdt']:.0f} BDT <i>(on {TRADE_SIZE_USDT:.0f} USDT)</i>\n\n"
-        
-        msg += "💡 <i>Tip: Use 'Send Money' only. Cancel if merchant asks for extra fee.</i>\n"
-        
+        msg += "💎 <b>BEST OPPORTUNITY</b> 💎\n"
+        msg += f"🛒 <b>BUY</b> {best['buy_method']}: <b>{b['price']:.2f} BDT</b>\n"
+        msg += f"   👤 {b['merchant']} | {b['fee_status']}\n"
+        msg += f"💰 <b>SELL</b> {best['sell_method']}: <b>{s['price']:.2f} BDT</b>\n"
+        msg += f"   👤 {s['merchant']} | {s['fee_status']}\n"
+        msg += f"📈 <b>Profit:</b> <u>{best['net_pct']:.2f}%</u> (~{best['profit_bdt']:.0f} BDT)\n\n"
         if best["net_pct"] >= ALERT_THRESHOLD_PCT:
-            msg += "\n🔥 <b>HIGH PROFIT ALERT! EXECUTE!</b>"
-        else:
-            msg += "\n⚠️ <i>Below 1.5% target. Wait for better spread.</i>"
+            msg += "🔥 <b>HIGH PROFIT! EXECUTE NOW!</b> 🔥\n"
     else:
-        msg += "❌ <i>No profitable opportunities found right now.</i>"
+        msg += "❌ <i>No profitable opportunities found right now.</i>\n"
         
+    msg += "━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "🔍 <b>LIVE MARKET & FEE ANALYSIS</b>\n\n"
+
+    # ২. লাইভ ডেটা (টপ ৩ মার্চেন্ট)
+    for method, data in market_data.items():
+        msg += f"💳 <b>{method}</b>\n"
+        
+        if data.get("buy"):
+            msg += "   🟢 <b>Top Buy (Lowest):</b>\n"
+            for ad in data["buy"]:
+                msg += f"      • {ad['price']:.2f} BDT | {ad['fee_status']} | {ad['merchant']}\n"
+        
+        if data.get("sell"):
+            msg += "   🔴 <b>Top Sell (Highest):</b>\n"
+            for ad in data["sell"]:
+                msg += f"      • {ad['price']:.2f} BDT | {ad['fee_status']} | {ad['merchant']}\n"
+        msg += "\n"
+
+    msg += "━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "💡 <b>Rules:</b> Always use 'Send Money'. Cancel if merchant asks for extra charges."
+    
     return msg
 
 def main():
     log.info("Fetching data...")
-    best = find_best_opportunity()
-    msg = format_message(best)
+    market_data = collect_market_data()
+    best = find_best_opportunity(market_data)
+    msg = format_full_analysis(market_data, best)
     send_telegram(msg)
     log.info("Update sent.")
 
