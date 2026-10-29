@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import requests
+from datetime import datetime
 
 # ============================ CONFIG ============================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -16,7 +17,6 @@ ROWS = 5                       # প্রতি রিকোয়েস্টে 
 METHODS = ["bKash", "Nagad", "Bank Transfer"]
 
 BINANCE_PAY = {"bKash": "bKash", "Nagad": "Nagad", "Bank Transfer": "BANK"}
-# Bybit-এর পেমেন্ট আইডি না থাকায় আপাতত ডিফল্ট রাখা হলো। সঠিক আইডি পেলে এটি কাজ করবে।
 BYBIT_PAY = {"bKash": "14", "Nagad": "15", "Bank Transfer": "16"} 
 
 HEADERS = {
@@ -64,14 +64,17 @@ def fetch_bybit(method, side):
         "size": str(ROWS), "page": "1", "amount": "",
         "authMaker": False, "canTrade": False,
     }
-    r = requests.post(url, json=body, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-    prices = []
-    for it in (r.json().get("result") or {}).get("items") or []:
-        p = float(it["price"])
-        if _fits(it.get("minAmount"), it.get("maxAmount"), p):
-            prices.append(p)
-    return prices
+    try:
+        r = requests.post(url, json=body, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+        prices = []
+        for it in (r.json().get("result") or {}).get("items") or []:
+            p = float(it["price"])
+            if _fits(it.get("minAmount"), it.get("maxAmount"), p):
+                prices.append(p)
+        return prices
+    except Exception:
+        return []
 
 def fetch_bitget(method, side):
     url = "https://www.bitget.com/v1/p2p/pub/adv/queryAdvList"
@@ -80,18 +83,21 @@ def fetch_bitget(method, side):
         "pageNo": 1, "pageSize": 20,
         "coinCode": "USDT", "fiatCode": "BDT", "languageType": 0,
     }
-    r = requests.post(url, json=body, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-    data = r.json().get("data") or {}
-    ads = data.get("dataList") or data.get("list") or []
-    prices = []
-    for ad in ads:
-        names = [str(m.get("paymethodName", m.get("name", ""))).lower() for m in (ad.get("paymentMethodList") or ad.get("payMethods") or [])]
-        if not any(method.lower().split()[0] in n for n in names): continue
-        p = float(ad["price"])
-        if _fits(ad.get("minAmount"), ad.get("maxAmount"), p):
-            prices.append(p)
-    return prices
+    try:
+        r = requests.post(url, json=body, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+        data = r.json().get("data") or {}
+        ads = data.get("dataList") or data.get("list") or []
+        prices = []
+        for ad in ads:
+            names = [str(m.get("paymethodName", m.get("name", ""))).lower() for m in (ad.get("paymentMethodList") or ad.get("payMethods") or [])]
+            if not any(method.lower().split()[0] in n for n in names): continue
+            p = float(ad["price"])
+            if _fits(ad.get("minAmount"), ad.get("maxAmount"), p):
+                prices.append(p)
+        return prices
+    except Exception:
+        return []
 
 EXCHANGES = {"Binance": fetch_binance, "Bybit": fetch_bybit, "Bitget": fetch_bitget}
 
@@ -108,7 +114,7 @@ def collect_quotes():
                 if sell_prices: q["bid"] = max(sell_prices)
                 if q: quotes.setdefault(ex_name, {})[m] = q
             except Exception as e:
-                log.warning(f"{ex_name}/{m} failed: {e}")
+                pass
             time.sleep(0.5)
     return quotes
 
@@ -130,7 +136,6 @@ def find_best_opportunity(quotes):
 
                     # Calculate profit
                     cost = TRADE_SIZE_USDT * buy_price
-                    # If different exchange, subtract network fee
                     fee = 0 if buy_ex == sell_ex else NETWORK_FEE_USDT
                     revenue = (TRADE_SIZE_USDT - fee) * sell_price
                     net_pct = ((revenue - cost) / cost) * 100
@@ -152,31 +157,42 @@ def send_telegram(text):
         log.error(f"Telegram send failed: {e}")
 
 def format_market_update(quotes, best):
-    msg = "📊 <b>Live P2P Market Update</b>\n\n"
+    # Get current time
+    now = datetime.now().strftime("%I:%M %p, %d %b %Y")
+    
+    msg = "📊 <b>P2P ARBITRAGE MONITOR</b>\n"
+    msg += f"🕒 <i>{now}</i>\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
     
     # Show lowest/highest for each exchange
     for ex, methods in quotes.items():
         msg += f"🏦 <b>{ex}</b>\n"
         for m, q in methods.items():
-            if "ask" in q: msg += f"   🟢 Buy: {q['ask']:.2f} BDT ({m})\n"
-            if "bid" in q: msg += f"   🔴 Sell: {q['bid']:.2f} BDT ({m})\n"
+            if "ask" in q: msg += f"   🟢 Buy: <b>{q['ask']:.2f}</b> BDT <i>({m})</i>\n"
+            if "bid" in q: msg += f"   🔴 Sell: <b>{q['bid']:.2f}</b> BDT <i>({m})</i>\n"
         msg += "\n"
+        
+    if not quotes.get("Bitget") and not quotes.get("Bybit"):
+        msg += "⚠️ <i>Bitget & Bybit data blocked by their server. (Binance is active)</i>\n\n"
+
+    msg += "━━━━━━━━━━━━━━━━━━━━\n"
 
     # Suggest best arbitrage
     if best and best["net_pct"] > 0:
-        msg += "🚨 <b>BEST ARBITRAGE OPPORTUNITY</b> 🚨\n"
-        msg += f"🛒 <b>BUY from:</b> {best['buy_ex']} (@ {best['buy_price']:.2f} BDT)\n"
-        msg += f"   Payment: {best['buy_method']}\n"
-        msg += f"💰 <b>SELL to:</b> {best['sell_ex']} (@ {best['sell_price']:.2f} BDT)\n"
-        msg += f"   Receive: {best['sell_method']}\n"
-        msg += f"📈 <b>Profit:</b> {best['net_pct']:.2f}% (≈ {best['profit_bdt']:.0f} BDT per {TRADE_SIZE_USDT:.0f} USDT)\n\n"
+        msg += "💎 <b>BEST OPPORTUNITY</b> 💎\n\n"
+        msg += f"🛒 <b>BUY</b> from <b>{best['buy_ex']}</b>\n"
+        msg += f"   Rate: <b>{best['buy_price']:.2f} BDT</b> (via {best['buy_method']})\n\n"
+        msg += f"💰 <b>SELL</b> to <b>{best['sell_ex']}</b>\n"
+        msg += f"   Rate: <b>{best['sell_price']:.2f} BDT</b> (via {best['sell_method']})\n\n"
+        msg += f"📈 <b>Net Profit:</b> <u>{best['net_pct']:.2f}%</u>\n"
+        msg += f"💵 <b>Est. Profit:</b> ~{best['profit_bdt']:.0f} BDT <i>(on {TRADE_SIZE_USDT:.0f} USDT)</i>\n\n"
         
         if best["net_pct"] >= ALERT_THRESHOLD_PCT:
-            msg += "🔥 <b>HIGH PROFIT ALERT!</b> Execute quickly!"
+            msg += "🔥 <b>HIGH PROFIT ALERT! EXECUTE NOW!</b> 🔥"
         else:
-            msg += "⚠️ Profit is below your 1.5% threshold."
+            msg += "⚠️ <i>Below 1.5% threshold. Keep waiting.</i>"
     else:
-        msg += "❌ No profitable arbitrage opportunities found right now."
+        msg += "❌ <i>No profitable arbitrage opportunities found right now.</i>"
         
     return msg
 
