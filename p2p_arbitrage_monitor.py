@@ -39,4 +39,19 @@ def format_full_analysis(market_data, best):
     else:
         msg += "❌ <i>এই মুহূর্তে লাভজনক কোনো সুযোগ পাওয়া যায়নি।</i>\n"
         
-    return msg
+    return msgdef main():
+    log.info("Fetching data...")
+    
+    # ১. টেস্ট মেসেজ পাঠানো (যদি এটাও না আসে, বুঝবেন Token বা Chat ID ভুল)
+    log.info("Sending test message...")
+    send_telegram("✅ বট সফলভাবে চালু হয়েছে! এখন আমি মার্কেট স্ক্যান করছি...")
+    
+    # ২. মূল কাজ
+    market_data = collect_market_data()
+    best = find_best_opportunity(market_data)
+    msg = format_full_analysis(market_data, best)
+    send_telegram(msg)
+    log.info("Update sent.")
+
+if __name__ == "__main__":
+    main()
