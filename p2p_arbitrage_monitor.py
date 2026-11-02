@@ -31,7 +31,7 @@ FEE_KEYWORDS = ["charge", "fee", "extra", "20tk", "20 taka", "15tk", "15 taka", 
 
 def analyze_fee_status(remarks):
     if not remarks: return "✅ No Fee"
-    remarks_lower = remarks.lower()
+    remarks_lower = str(remarks).lower()
     if any(keyword in remarks_lower for keyword in FEE_KEYWORDS):
         return "🚨 Hidden Charge!"
     return "✅ No Fee"
@@ -67,6 +67,7 @@ def fetch_binance(method, side):
                 ads.append({"price": p, "merchant": merchant, "fee_status": analyze_fee_status(remarks)})
         return ads
     except Exception as e:
+        log.warning(f"Binance fetch failed: {e}")
         return []
 
 def fetch_bybit(method, side):
@@ -86,7 +87,7 @@ def fetch_bybit(method, side):
         for it in (r.json().get("result") or {}).get("items") or []:
             p = float(it["price"])
             if _fits(it.get("minAmount"), it.get("maxAmount"), p):
-                ads.append({"price": p, "merchant": "Bybit Merchant", "fee_status": "✅ No Fee"})
+                ads.append({"price": p, "merchant": "Bybit User", "fee_status": "✅ No Fee"})
         return ads
     except Exception:
         return []
@@ -109,7 +110,7 @@ def fetch_bitget(method, side):
             if not any(method.lower().split()[0] in n for n in names): continue
             p = float(ad["price"])
             if _fits(ad.get("minAmount"), ad.get("maxAmount"), p):
-                ads.append({"price": p, "merchant": "Bitget Merchant", "fee_status": "✅ No Fee"})
+                ads.append({"price": p, "merchant": "Bitget User", "fee_status": "✅ No Fee"})
         return ads
     except Exception:
         return []
@@ -141,27 +142,31 @@ def find_best_opportunity(market_data):
                 for sell_method, data_sell in methods_sell.items():
                     if not data_sell.get("sell"): continue
                     
-                    buy_price = float(data_buy["buy"][0]["price"])
-                    sell_price = float(data_sell["sell"][0]["price"])
-                    
-                    is_same_exchange = (buy_ex == sell_ex)
-                    fee_bdt = 0.0 if is_same_exchange else (float(NETWORK_FEE_USDT) * sell_price)
-                    
-                    usdt_amount = (MY_CAPITAL_BDT - fee_bdt) / buy_price
-                    revenue_bdt = usdt_amount * sell_price
-                    
-                    net_profit_bdt = revenue_bdt - MY_CAPITAL_BDT
-                    net_pct = (net_profit_bdt / MY_CAPITAL_BDT) * 100
-                    
-                    if best is None or net_pct > best["net_pct"]:
-                        best = {
-                            "buy_ex": buy_ex, "buy_method": buy_method, "buy_price": buy_price, "buy_data": data_buy["buy"][0],
-                            "sell_ex": sell_ex, "sell_method": sell_method, "sell_price": sell_price, "sell_data": data_sell["sell"][0],
-                            "is_same_ex": is_same_exchange,
-                            "net_pct": net_pct, 
-                            "profit_bdt": net_profit_bdt,
-                            "usdt_amount": usdt_amount
-                        }
+                    try:
+                        buy_price = float(data_buy["buy"][0]["price"])
+                        sell_price = float(data_sell["sell"][0]["price"])
+                        
+                        is_same_exchange = (buy_ex == sell_ex)
+                        fee_bdt = 0.0 if is_same_exchange else (float(NETWORK_FEE_USDT) * sell_price)
+                        
+                        usdt_amount = (MY_CAPITAL_BDT - fee_bdt) / buy_price
+                        revenue_bdt = usdt_amount * sell_price
+                        
+                        net_profit_bdt = revenue_bdt - MY_CAPITAL_BDT
+                        net_pct = (net_profit_bdt / MY_CAPITAL_BDT) * 100
+                        
+                        if best is None or net_pct > best["net_pct"]:
+                            best = {
+                                "buy_ex": buy_ex, "buy_method": buy_method, "buy_price": buy_price, "buy_data": data_buy["buy"][0],
+                                "sell_ex": sell_ex, "sell_method": sell_method, "sell_price": sell_price, "sell_data": data_sell["sell"][0],
+                                "is_same_ex": is_same_exchange,
+                                "net_pct": net_pct, 
+                                "profit_bdt": net_profit_bdt,
+                                "usdt_amount": usdt_amount
+                            }
+                    except Exception as e:
+                        log.warning(f"Error calculating opportunity: {e}")
+                        continue
     return best
 
 def send_telegram(text):
@@ -183,40 +188,44 @@ def format_full_analysis(market_data, best):
     msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
     
     if best:
-        b = best["buy_data"]
-        s = best["sell_data"]
-        
-        msg += "📊 <b>১. পুঁজি ও লাভের হিসাব</b>\n"
-        msg += f"   • আপনার পুঁজি: <b>{MY_CAPITAL_BDT:.0f} BDT</b>\n"
-        msg += f"   • আপনার লাভ: <b>{best['net_pct']:.2f}%</b>\n"
-        msg += f"   • টাকায় লাভ: <b>~{best['profit_bdt']:.0f} BDT</b>\n\n"
-        
-        if best["is_same_ex"]:
-            msg += f"🤝 <b>ধরন: Same Exchange Arbitrage</b>\n\n"
-        else:
-            msg += f"🚀 <b>ধরন: Cross-Exchange Arbitrage</b>\n"
-            msg += f"   (এক্সচেঞ্জের মধ্যে ডলার পাঠানোর ফি বাদ দেওয়া হয়েছে)\n\n"
+        try:
+            b = best["buy_data"]
+            s = best["sell_data"]
+            
+            msg += "📊 <b>১. পুঁজি ও লাভের হিসাব</b>\n"
+            msg += f"   • আপনার পুঁজি: <b>{MY_CAPITAL_BDT:.0f} BDT</b>\n"
+            msg += f"   • আপনার লাভ: <b>{best['net_pct']:.2f}%</b>\n"
+            msg += f"   • টাকায় লাভ: <b>~{best['profit_bdt']:.0f} BDT</b>\n\n"
+            
+            if best["is_same_ex"]:
+                msg += f"🤝 <b>ধরন: Same Exchange Arbitrage</b>\n\n"
+            else:
+                msg += f"🚀 <b>ধরন: Cross-Exchange Arbitrage</b>\n"
+                msg += f"   (এক্সচেঞ্জের মধ্যে ডলার পাঠানোর ফি বাদ দেওয়া হয়েছে)\n\n"
 
-        msg += "🛒 <b>২. BUY AD (কেনার বিজ্ঞাপন)</b>\n"
-        msg += f"   • এক্সচেঞ্জ: <b>{best['buy_ex']}</b>\n"
-        msg += f"   • রেট: <b>{best['buy_price']:.2f} BDT</b>\n"
-        msg += f"   • পরিমাণ: <b>{best['usdt_amount']:.2f} USDT</b>\n"
-        msg += f"   • লিমিট: <b>৫,০০০ - {MY_CAPITAL_BDT:.0f} BDT</b>\n"
-        msg += f"   • পেমেন্ট: {best['buy_method']}\n"
-        msg += f"   • মার্চেন্ট: {b['merchant']} ({b['fee_status']})\n\n"
-        
-        msg += "💰 <b>৩. SELL AD (বেচার বিজ্ঞাপন)</b>\n"
-        msg += f"   • এক্সচেঞ্জ: <b>{best['sell_ex']}</b>\n"
-        msg += f"   • রেট: <b>{best['sell_price']:.2f} BDT</b>\n"
-        msg += f"   • পেমেন্ট: {best['sell_method']}\n"
-        msg += f"   • মার্চেন্ট: {s['merchant']} ({s['fee_status']})\n\n"
+            msg += "🛒 <b>২. BUY AD (কেনার বিজ্ঞাপন)</b>\n"
+            msg += f"   • এক্সচেঞ্জ: <b>{best['buy_ex']}</b>\n"
+            msg += f"   • রেট: <b>{best['buy_price']:.2f} BDT</b>\n"
+            msg += f"   • পরিমাণ: <b>{best['usdt_amount']:.2f} USDT</b>\n"
+            msg += f"   • লিমিট: <b>৫,০০০ - {MY_CAPITAL_BDT:.0f} BDT</b>\n"
+            msg += f"   • পেমেন্ট: {best['buy_method']}\n"
+            msg += f"   • মার্চেন্ট: {b.get('merchant','Unknown')} ({b.get('fee_status','Unknown')})\n\n"
+            
+            msg += "💰 <b>৩. SELL AD (বেচার বিজ্ঞাপন)</b>\n"
+            msg += f"   • এক্সচেঞ্জ: <b>{best['sell_ex']}</b>\n"
+            msg += f"   • রেট: <b>{best['sell_price']:.2f} BDT</b>\n"
+            msg += f"   • পেমেন্ট: {best['sell_method']}\n"
+            msg += f"   • মার্চেন্ট: {s.get('merchant','Unknown')} ({s.get('fee_status','Unknown')})\n\n"
 
-        msg += "━━━━━━━━━━━━━━━━━━━━\n"
-        msg += "💡 <b>ম্যানেজার'স অ্যাডভাইস:</b>\n"
-        if best["is_same_ex"]:
-            msg += "একই অ্যাপে কেনাবেচা করলে ডলার ট্রান্সফার করতে হবে না, তাই রিস্ক কম। রেট আপডেট করে অ্যাড পোস্ট করুন।\n"
-        else:
-            msg += f"{best['buy_ex']} থেকে কিনে {best['sell_ex']}-এ বিক্রি করলে বেশি লাভ হবে। তবে ডলার পাঠানোর সময় BEP20 নেটওয়ার্ক ব্যবহার করবেন।\n"
+            msg += "━━━━━━━━━━━━━━━━━━━━\n"
+            msg += "💡 <b>ম্যানেজার'স অ্যাডভাইস:</b>\n"
+            if best["is_same_ex"]:
+                msg += "একই অ্যাপে কেনাবেচা করলে ডলার ট্রান্সফার করতে হবে না, তাই রিস্ক কম। রেট আপডেট করে অ্যাড পোস্ট করুন।\n"
+            else:
+                msg += f"{best['buy_ex']} থেকে কিনে {best['sell_ex']}-এ বিক্রি করলে বেশি লাভ হবে। তবে ডলার পাঠানোর সময় BEP20 নেটওয়ার্ক ব্যবহার করবেন।\n"
+        except Exception as e:
+            msg += "❌ <i>রিপোর্ট তৈরি করতে সমস্যা হয়েছে।</i>\n\n"
+            log.error(f"Formatting error: {e}")
     else:
         msg += "❌ <i>এই মুহূর্তে লাভজনক কোনো সুযোগ পাওয়া যায়নি।</i>\n\n"
         
@@ -230,7 +239,7 @@ def format_full_analysis(market_data, best):
 def main():
     log.info("Starting Monitor...")
     
-    # ১. টেস্ট মেসেজ (নিশ্চিত করার জন্য যে টেলিগ্রাম কাজ করছে)
+    # ১. টেস্ট মেসেজ
     log.info("Sending test message to Telegram...")
     send_telegram("✅ <b>বট সফলভাবে চালু হয়েছে!</b>\nএখন আমি মার্কেট স্ক্যান করে রিপোর্ট পাঠাচ্ছি...")
     
@@ -238,9 +247,13 @@ def main():
     log.info("Fetching data from Binance, Bybit, Bitget...")
     market_data = collect_market_data()
     best = find_best_opportunity(market_data)
+    
+    log.info("Formatting final report...")
     msg = format_full_analysis(market_data, best)
+    
+    log.info("Sending final report...")
     send_telegram(msg)
-    log.info("Update sent.")
+    log.info("Update sent successfully.")
 
 if __name__ == "__main__":
     main()
