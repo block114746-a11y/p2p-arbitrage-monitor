@@ -8,9 +8,9 @@ from datetime import datetime
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-ALERT_THRESHOLD_PCT = 1.0      # ১% বা তার বেশি লাভ হলে অ্যালার্ট
-MY_CAPITAL_BDT = 50000.0       # আপনার মোট পুঁজি (টাকায়)
-NETWORK_FEE_USDT = 0.2         # এক এক্সচেঞ্জ থেকে অন্য এক্সচেঞ্জে ডলার পাঠানোর ফি
+ALERT_THRESHOLD_PCT = 1.0      
+MY_CAPITAL_BDT = 50000.0       
+NETWORK_FEE_USDT = 0.2         
 REQUEST_TIMEOUT = 15
 ROWS = 10                      
 
@@ -26,7 +26,6 @@ HEADERS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("p2p")
 
-# ========================== SMART FEE DETECTOR ==========================
 FEE_KEYWORDS = ["charge", "fee", "extra", "20tk", "20 taka", "15tk", "15 taka", "cash out", "cashout", "kata"]
 
 def analyze_fee_status(remarks):
@@ -61,13 +60,12 @@ def fetch_binance(method, side):
             adv = item["adv"]
             p = float(adv["price"])
             if _fits(adv.get("minSingleTransAmount"), adv.get("maxSingleTransAmount"), p):
-                advertiser = item.get("advertiser", {})
-                merchant = advertiser.get("nickName", "Unknown")
+                advertiser = item.get("advertiser") or {}
+                merchant = advertiser.get("nickName") or advertiser.get("userName") or "Merchant"
                 remarks = adv.get("remarks", "") or ""
                 ads.append({"price": p, "merchant": merchant, "fee_status": analyze_fee_status(remarks)})
         return ads
-    except Exception as e:
-        log.warning(f"Binance fetch failed: {e}")
+    except Exception:
         return []
 
 def fetch_bybit(method, side):
@@ -87,7 +85,7 @@ def fetch_bybit(method, side):
         for it in (r.json().get("result") or {}).get("items") or []:
             p = float(it["price"])
             if _fits(it.get("minAmount"), it.get("maxAmount"), p):
-                merchant_name = it.get("nickName") or it.get("merchantName") or "Bybit User"
+                merchant_name = it.get("nickName") or it.get("merchantName") or "Merchant"
                 ads.append({"price": p, "merchant": merchant_name, "fee_status": "✅ No Fee"})
         return ads
     except Exception:
@@ -111,19 +109,11 @@ def fetch_bitget(method, side):
             if not any(method.lower().split()[0] in n for n in names): continue
             p = float(ad["price"])
             if _fits(ad.get("minAmount"), ad.get("maxAmount"), p):
-                # বিটগেটের মার্চেন্টের নাম বের করার আপডেট (Nested Dictionary Check)
-                merchant_name = "Unknown"
-                if ad.get("advertiser") and isinstance(ad["advertiser"], dict):
-                    merchant_name = ad["advertiser"].get("nickName", "Unknown")
-                elif ad.get("merchantInfo") and isinstance(ad["merchantInfo"], dict):
-                    merchant_name = ad["merchantInfo"].get("nickName", "Unknown")
-                elif ad.get("nickName"):
-                    merchant_name = ad.get("nickName")
-                
+                advertiser = ad.get("advertiser") or {}
+                merchant_name = advertiser.get("nickName") or ad.get("nickName") or "Merchant"
                 ads.append({"price": p, "merchant": merchant_name, "fee_status": "✅ No Fee"})
         return ads
-    except Exception as e:
-        log.warning(f"Bitget fetch failed: {e}")
+    except Exception:
         return []
 
 # ============================ CORE LOGIC ============================
@@ -144,7 +134,9 @@ def collect_market_data():
     return market_data
 
 def find_best_opportunity(market_data):
-    best = None
+    best_binance_bybit = None
+    best_bitget = None
+
     for buy_ex, methods_buy in market_data.items():
         for buy_method, data_buy in methods_buy.items():
             if not data_buy.get("buy"): continue
@@ -166,28 +158,41 @@ def find_best_opportunity(market_data):
                         net_profit_bdt = revenue_bdt - MY_CAPITAL_BDT
                         net_pct = (net_profit_bdt / MY_CAPITAL_BDT) * 100
                         
-                        if best is None or net_pct > best["net_pct"]:
-                            best = {
-                                "buy_ex": buy_ex, "buy_method": buy_method, "buy_price": buy_price, "buy_data": data_buy["buy"][0],
-                                "sell_ex": sell_ex, "sell_method": sell_method, "sell_price": sell_price, "sell_data": data_sell["sell"][0],
-                                "is_same_ex": is_same_exchange,
-                                "net_pct": net_pct, 
-                                "profit_bdt": net_profit_bdt,
-                                "usdt_amount": usdt_amount
-                            }
-                    except Exception as e:
-                        log.warning(f"Error calculating opportunity: {e}")
+                        opp = {
+                            "buy_ex": buy_ex, "buy_method": buy_method, "buy_price": buy_price, "buy_data": data_buy["buy"][0],
+                            "sell_ex": sell_ex, "sell_method": sell_method, "sell_price": sell_price, "sell_data": data_sell["sell"][0],
+                            "is_same_ex": is_same_exchange,
+                            "net_pct": net_pct, 
+                            "profit_bdt": net_profit_bdt,
+                            "usdt_amount": usdt_amount
+                        }
+
+                        # বাইন্যান্স এবং বাইবিটের জন্য আলাদা খাতা
+                        if buy_ex in ["Binance", "Bybit"] and sell_ex in ["Binance", "Bybit"]:
+                            if best_binance_bybit is None or net_pct > best_binance_bybit["net_pct"]:
+                                best_binance_bybit = opp
+                        # বিটগেটের জন্য আলাদা খাতা
+                        else:
+                            if best_bitget is None or net_pct > best_bitget["net_pct"]:
+                                best_bitget = opp
+                                
+                    except Exception:
                         continue
-    return best
+
+    # প্রায়োরিটি লজিক: বাইন্যান্স বা বাইবিটে যদি ০.১% এর বেশি লাভ থাকে, তবে বিটগেট বাদ দিয়ে সেটাই দেখাবে
+    if best_binance_bybit and best_binance_bybit["net_pct"] >= 0.1:
+        return best_binance_bybit
+    elif best_bitget and best_bitget["net_pct"] >= 0.1:
+        return best_bitget
+    else:
+        # যদি কোথাও লাভ না থাকে, তবে যেটাতে লাভ আছে সেটা দেখাবে
+        return best_binance_bybit or best_bitget
 
 def send_telegram(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log.error("Telegram credentials missing!")
-        return
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
     try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=REQUEST_TIMEOUT)
-        r.raise_for_status()
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
 
@@ -220,13 +225,13 @@ def format_full_analysis(market_data, best):
             msg += f"   • পরিমাণ: <b>{best['usdt_amount']:.2f} USDT</b>\n"
             msg += f"   • লিমিট: <b>৫,০০০ - {MY_CAPITAL_BDT:.0f} BDT</b>\n"
             msg += f"   • পেমেন্ট: {best['buy_method']}\n"
-            msg += f"   • মার্চেন্ট: {b.get('merchant','Unknown')} ({b.get('fee_status','Unknown')})\n\n"
+            msg += f"   • মার্চেন্ট: {b.get('merchant','Merchant')} ({b.get('fee_status','Unknown')})\n\n"
             
             msg += "💰 <b>৩. SELL AD (বেচার বিজ্ঞাপন)</b>\n"
             msg += f"   • এক্সচেঞ্জ: <b>{best['sell_ex']}</b>\n"
             msg += f"   • রেট: <b>{best['sell_price']:.2f} BDT</b>\n"
             msg += f"   • পেমেন্ট: {best['sell_method']}\n"
-            msg += f"   • মার্চেন্ট: {s.get('merchant','Unknown')} ({s.get('fee_status','Unknown')})\n\n"
+            msg += f"   • মার্চেন্ট: {s.get('merchant','Merchant')} ({s.get('fee_status','Unknown')})\n\n"
 
             msg += "━━━━━━━━━━━━━━━━━━━━\n"
             msg += "💡 <b>ম্যানেজার'স অ্যাডভাইস:</b>\n"
@@ -235,13 +240,11 @@ def format_full_analysis(market_data, best):
             else:
                 msg += f"{best['buy_ex']} থেকে কিনে {best['sell_ex']}-এ বিক্রি করলে বেশি লাভ হবে। তবে ডলার পাঠানোর সময় BEP20 নেটওয়ার্ক ব্যবহার করবেন।\n"
             
-            # ৫% এর বেশি লাভ হলে সতর্কবার্তা
-            if best["net_pct"] > 3.0:
-                msg += "\n🚨 <b>সতর্কতা:</b> ৩% এর বেশি লাভ সাধারণত ফেক বা Ghost Ad হয়। ট্রেড করার আগে অ্যাপে লিমিট ও অ্যাডটি ভালোভাবে চেক করুন!\n"
+            if "Bitget" in [best["buy_ex"], best["sell_ex"]]:
+                msg += "\n🚨 <b>সতর্কতা:</b> বিটগেটের ডেটা মাঝে মাঝে ফেক বা Ghost Ad হতে পারে। ট্রেড করার আগে অ্যাপে লিমিট ও অ্যাডটি ভালোভাবে চেক করুন!\n"
 
         except Exception as e:
             msg += "❌ <i>রিপোর্ট তৈরি করতে সমস্যা হয়েছে।</i>\n\n"
-            log.error(f"Formatting error: {e}")
     else:
         msg += "❌ <i>এই মুহূর্তে লাভজনক কোনো সুযোগ পাওয়া যায়নি।</i>\n\n"
         
@@ -254,20 +257,12 @@ def format_full_analysis(market_data, best):
 
 def main():
     log.info("Starting Monitor...")
+    send_telegram("✅ <b>বট সফলভাবে চালু হয়েছে!</b>\nএখন আমি বাইন্যান্স, বাইবিট ও বিটগেট স্ক্যান করে সেরা রিপোর্ট পাঠাচ্ছি...")
     
-    # ১. টেস্ট মেসেজ
-    log.info("Sending test message to Telegram...")
-    send_telegram("✅ <b>বট সফলভাবে চালু হয়েছে!</b>\nএখন আমি মার্কেট স্ক্যান করে রিপোর্ট পাঠাচ্ছি...")
-    
-    # ২. মূল কাজ
-    log.info("Fetching data from Binance, Bybit, Bitget...")
     market_data = collect_market_data()
     best = find_best_opportunity(market_data)
     
-    log.info("Formatting final report...")
     msg = format_full_analysis(market_data, best)
-    
-    log.info("Sending final report...")
     send_telegram(msg)
     log.info("Update sent successfully.")
 
