@@ -111,11 +111,19 @@ def fetch_bitget(method, side):
             if not any(method.lower().split()[0] in n for n in names): continue
             p = float(ad["price"])
             if _fits(ad.get("minAmount"), ad.get("maxAmount"), p):
-                # মার্চেন্টের আসল নাম বের করার আপডেট
-                merchant_name = ad.get("nickName") or ad.get("merchantName") or ad.get("userName") or "Bitget User"
+                # বিটগেটের মার্চেন্টের নাম বের করার আপডেট (Nested Dictionary Check)
+                merchant_name = "Unknown"
+                if ad.get("advertiser") and isinstance(ad["advertiser"], dict):
+                    merchant_name = ad["advertiser"].get("nickName", "Unknown")
+                elif ad.get("merchantInfo") and isinstance(ad["merchantInfo"], dict):
+                    merchant_name = ad["merchantInfo"].get("nickName", "Unknown")
+                elif ad.get("nickName"):
+                    merchant_name = ad.get("nickName")
+                
                 ads.append({"price": p, "merchant": merchant_name, "fee_status": "✅ No Fee"})
         return ads
-    except Exception:
+    except Exception as e:
+        log.warning(f"Bitget fetch failed: {e}")
         return []
 
 # ============================ CORE LOGIC ============================
@@ -226,6 +234,11 @@ def format_full_analysis(market_data, best):
                 msg += "একই অ্যাপে কেনাবেচা করলে ডলার ট্রান্সফার করতে হবে না, তাই রিস্ক কম। রেট আপডেট করে অ্যাড পোস্ট করুন।\n"
             else:
                 msg += f"{best['buy_ex']} থেকে কিনে {best['sell_ex']}-এ বিক্রি করলে বেশি লাভ হবে। তবে ডলার পাঠানোর সময় BEP20 নেটওয়ার্ক ব্যবহার করবেন।\n"
+            
+            # ৫% এর বেশি লাভ হলে সতর্কবার্তা
+            if best["net_pct"] > 3.0:
+                msg += "\n🚨 <b>সতর্কতা:</b> ৩% এর বেশি লাভ সাধারণত ফেক বা Ghost Ad হয়। ট্রেড করার আগে অ্যাপে লিমিট ও অ্যাডটি ভালোভাবে চেক করুন!\n"
+
         except Exception as e:
             msg += "❌ <i>রিপোর্ট তৈরি করতে সমস্যা হয়েছে।</i>\n\n"
             log.error(f"Formatting error: {e}")
