@@ -8,14 +8,15 @@ from datetime import datetime
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-ALERT_THRESHOLD_PCT = 1.0      # ১% বা তার বেশি লাভ হলে অ্যালার্ট
-MY_CAPITAL_BDT = 50000.0       # আপনার মোট পুঁজি (টাকা)
-NETWORK_FEE_USDT = 0.2         # ক্রস-এক্সচেঞ্জে ডলার পাঠানোর ফি
+ALERT_THRESHOLD_PCT = 1.0      # ১% বা তার বেশি লাভ হলে মেসেজে হাইলাইট করবে
+MY_CAPITAL_BDT = 50000.0       # আপনার মোট পুঁজি (টাকায়)
+NETWORK_FEE_USDT = 0.2         # এক এক্সচেঞ্জ থেকে অন্য এক্সচেঞ্জে ডলার পাঠানোর ফি
 REQUEST_TIMEOUT = 15
 ROWS = 10                      
 
 METHODS = ["bKash", "Nagad", "Bank Transfer"]
 BINANCE_PAY = {"bKash": "bKash", "Nagad": "Nagad", "Bank Transfer": "BANK"}
+# Bybit API মাঝে মাঝে ব্লক করে, তাই try-except দিয়ে রাখা হয়েছে
 BYBIT_PAY = {"bKash": "14", "Nagad": "15", "Bank Transfer": "16"} 
 
 HEADERS = {
@@ -26,14 +27,14 @@ HEADERS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("p2p")
 
-FEE_KEYWORDS = ["charge", "fee", "extra", "20tk", "20 taka", "15tk", "15 taka", "cash out", "cashout"]
+FEE_KEYWORDS = ["charge", "fee", "extra", "20tk", "20 taka", "15tk", "15 taka", "cash out", "cashout", "kata"]
 
 def analyze_fee_status(remarks):
-    if not remarks: return "✅ No Fee Mentioned"
+    if not remarks: return "✅ No Fee"
     remarks_lower = remarks.lower()
     if any(keyword in remarks_lower for keyword in FEE_KEYWORDS):
-        return "🚨 Hidden Charge"
-    return "✅ No Fee Mentioned"
+        return "🚨 Hidden Charge!"
+    return "✅ No Fee"
 
 # ========================== FETCHERS ==========================
 def _fits(min_bdt, max_bdt, price):
@@ -66,6 +67,7 @@ def fetch_binance(method, side):
                 ads.append({"price": p, "merchant": merchant, "fee_status": analyze_fee_status(remarks)})
         return ads
     except Exception as e:
+        log.warning(f"Binance fetch failed: {e}")
         return []
 
 def fetch_bybit(method, side):
@@ -85,7 +87,7 @@ def fetch_bybit(method, side):
         for it in (r.json().get("result") or {}).get("items") or []:
             p = float(it["price"])
             if _fits(it.get("minAmount"), it.get("maxAmount"), p):
-                ads.append({"price": p, "merchant": "Bybit User", "fee_status": "✅ No Fee Mentioned"})
+                ads.append({"price": p, "merchant": "Bybit Merchant", "fee_status": "✅ No Fee"})
         return ads
     except Exception:
         return []
@@ -108,7 +110,7 @@ def fetch_bitget(method, side):
             if not any(method.lower().split()[0] in n for n in names): continue
             p = float(ad["price"])
             if _fits(ad.get("minAmount"), ad.get("maxAmount"), p):
-                ads.append({"price": p, "merchant": "Bitget User", "fee_status": "✅ No Fee Mentioned"})
+                ads.append({"price": p, "merchant": "Bitget Merchant", "fee_status": "✅ No Fee"})
         return ads
     except Exception:
         return []
@@ -140,14 +142,13 @@ def find_best_opportunity(market_data):
                 for sell_method, data_sell in methods_sell.items():
                     if not data_sell.get("sell"): continue
                     
-                    buy_price = data_buy["buy"][0]["price"]
-                    sell_price = data_sell["sell"][0]["price"]
+                    # float() নিশ্চিত করছে যেন এটি সংখ্যা হিসেবে গণ্য হয়
+                    buy_price = float(data_buy["buy"][0]["price"])
+                    sell_price = float(data_sell["sell"][0]["price"])
                     
-                    # আমরা যদি একই এক্সচেঞ্জে কিনে বেচি, ফি লাগবে না। ভিন্ন এক্সচেঞ্জে হলে ফি লাগবে।
                     is_same_exchange = (buy_ex == sell_ex)
-                    fee_bdt = 0 if is_same_exchange else (NETWORK_FEE_USDT * sell_price)
+                    fee_bdt = 0.0 if is_same_exchange else (float(NETWORK_FEE_USDT) * sell_price)
                     
-                    # ৫০,০০০ টাকা দিয়ে কত ডলার কেনা যাবে
                     usdt_amount = (MY_CAPITAL_BDT - fee_bdt) / buy_price
                     revenue_bdt = usdt_amount * sell_price
                     
