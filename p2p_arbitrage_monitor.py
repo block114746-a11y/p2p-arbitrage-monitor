@@ -87,7 +87,8 @@ def fetch_bybit(method, side):
         for it in (r.json().get("result") or {}).get("items") or []:
             p = float(it["price"])
             if _fits(it.get("minAmount"), it.get("maxAmount"), p):
-                ads.append({"price": p, "merchant": "Bybit User", "fee_status": "✅ No Fee"})
+                merchant_name = it.get("nickName") or it.get("merchantName") or "Bybit User"
+                ads.append({"price": p, "merchant": merchant_name, "fee_status": "✅ No Fee"})
         return ads
     except Exception:
         return []
@@ -110,7 +111,9 @@ def fetch_bitget(method, side):
             if not any(method.lower().split()[0] in n for n in names): continue
             p = float(ad["price"])
             if _fits(ad.get("minAmount"), ad.get("maxAmount"), p):
-                ads.append({"price": p, "merchant": "Bitget User", "fee_status": "✅ No Fee"})
+                # মার্চেন্টের আসল নাম বের করার আপডেট
+                merchant_name = ad.get("nickName") or ad.get("merchantName") or ad.get("userName") or "Bitget User"
+                ads.append({"price": p, "merchant": merchant_name, "fee_status": "✅ No Fee"})
         return ads
     except Exception:
         return []
